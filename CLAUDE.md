@@ -45,6 +45,8 @@ Gradle 모노레포(서비스 = 모듈), 모듈 내부는 헥사고날 + DDD.
 
 **의존 규칙: adapter → application → domain. 도메인은 인프라(Spring/DB/Kafka)를 모른다.**
 
+**Lombok 사용 범위: adapter / application 레이어의 DI 보일러플레이트(`@RequiredArgsConstructor` 등)에만. `domain`은 순수 Java 유지 — Lombok도 쓰지 않는다.**
+
 ## 아키텍처 핵심 결정 (설계 근거)
 - 잔액·한도는 payment 서버 **내부 모듈**(별도 서버 X) → 단일 DB 트랜잭션 원자성 (v0_2 2장).
 - 사용자 동시성은 **DB 비관적 락 단독**(Redis 분산 락 없음). 잔액→한도 **고정 순서 락**으로 데드락 회피 (v0_2 9장).
