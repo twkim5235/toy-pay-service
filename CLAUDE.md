@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-간편결제(네이버페이 모델) 시스템. 설계 문서 `02_doc/`(payment-design-v0_2 = 결제 본체, payment-cancel-design_v4_5 = 취소/환불) 기반 구현. 소스는 `01_src/`.
+간편결제(네이버페이 모델) 시스템. 설계 문서 `02_doc/design/`(payment-design-v0_2 = 결제 본체, payment-cancel-design_v4_5 = 취소/환불), 진행 로드맵 `02_doc/planning/implementation-roadmap.md` 기반 구현. 소스는 `01_src/`.
 
 ## 개발 원칙 (필수 준수)
 
