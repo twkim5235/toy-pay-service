@@ -7,11 +7,15 @@ spring:
     password: payment
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
-      maximum-pool-size: 20
+      # 설계 9-8: DB vCPU에 맞춤(요청 동시성 아님). TPS 100·단일 DB엔 10이면 ~2배 헤드룸.
+      maximum-pool-size: 10
+      # 풀 고갈 시 스레드가 무한 대기하지 않도록 (기본 30s는 과대).
+      connection-timeout: 3000
   jpa:
     hibernate:
-      # 스키마는 Flyway가 단독 관리. 엔티티-스키마 정합성은 Testcontainers 통합테스트로 검증.
-      ddl-auto: none
+      # 스키마는 Flyway가 단독 관리(생성·변경). Hibernate는 부팅 시 엔티티↔스키마 정합성만 검증하고
+      # 어긋나면 기동 실패시킨다. (Testcontainers 통합테스트도 이 validate 부팅을 그대로 거친다.)
+      ddl-auto: validate
     open-in-view: false
     properties:
       hibernate:
