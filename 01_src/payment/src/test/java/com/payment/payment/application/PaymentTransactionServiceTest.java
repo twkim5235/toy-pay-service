@@ -3,6 +3,8 @@ package com.payment.payment.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -19,13 +21,22 @@ import com.payment.balance.domain.UserDailyUsage;
 import com.payment.common.Money;
 import com.payment.common.error.BusinessException;
 import com.payment.common.error.ErrorCode;
+import com.payment.payment.application.port.in.PaymentResult;
 import com.payment.payment.application.port.in.ProcessPaymentCommand;
 import com.payment.payment.application.port.in.ProcessPaymentCommand.Line;
 import com.payment.payment.application.port.out.CompensationFailureRecorder;
 import com.payment.payment.application.port.out.PaymentIdempotencyRepository;
 import com.payment.payment.application.port.out.PaymentRepository;
+import com.payment.payment.domain.AllocationStatus;
+import com.payment.payment.domain.IdempotencyStatus;
+import com.payment.payment.domain.Payment;
+import com.payment.payment.domain.PaymentAllocation;
+import com.payment.payment.domain.PaymentIdempotency;
 import com.payment.payment.domain.PaymentMethodType;
+import com.payment.payment.domain.PaymentStatus;
+import com.payment.payment.domain.PgCallStatus;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -120,5 +131,121 @@ class PaymentTransactionServiceTest {
         verify(historyRepo, never()).append(any());
         verify(usageRepo).save(any());
         assertThat(reservation.externalAllocations()).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("confirm: 외부 allocation SETTLED(+pgTxId) + payment PAID + idempotency COMPLETED")
+    void confirm_paid() {
+        Payment payment = splitPayment();
+        PaymentAllocation card = payment.externalAllocations().getFirst();
+        when(paymentRepo.findById(payment.id())).thenReturn(Optional.of(payment));
+        when(idempotencyRepo.find("u1", "idem-1")).thenReturn(Optional.of(idempotencyFor(payment)));
+
+        PaymentResult result = service.confirm(payment.id(), "u1", "idem-1",
+                List.of(new PaymentTransactionService.Charged(card.id(), "PG_tx_1")));
+
+        assertThat(result.status()).isEqualTo(PaymentStatus.PAID);
+        PaymentResult.Alloc cardResult = result.allocations().stream()
+                .filter(a -> a.methodType() == PaymentMethodType.CARD).findFirst().orElseThrow();
+        assertThat(cardResult.status()).isEqualTo(AllocationStatus.SETTLED);
+        assertThat(cardResult.pgTransactionId()).isEqualTo("PG_tx_1");
+        verify(paymentRepo).save(argThat(saved -> saved.status() == PaymentStatus.PAID));
+        verify(idempotencyRepo).save(argThat(i -> i.status() == IdempotencyStatus.COMPLETED));
+    }
+
+    @Test
+    @DisplayName("compensate: 잔액(BALANCE 분배분)과 일일 누적(전액)을 원복한다")
+    void compensate_rolls_back_balance_and_usage() {
+        Payment payment = compensateScenario();
+
+        service.compensate(payment.id(), "u1", "idem-1", PaymentStatus.FAILED, List.of());
+
+        verify(balanceRepo).save(argThat(b -> b.balance().equals(Money.won(1_000_000)))); // 70만 + 30만
+        verify(historyRepo).append(any(BalanceHistory.class));
+        ArgumentCaptor<UserDailyUsage> usageCaptor = ArgumentCaptor.forClass(UserDailyUsage.class);
+        verify(usageRepo).save(usageCaptor.capture());
+        assertThat(usageCaptor.getValue().usedAmount()).isEqualTo(Money.ZERO); // 전액 원복
+    }
+
+    @Test
+    @DisplayName("compensate: 이미 청구된 카드 금액을 PG_REFUND_CALL로 기록한다(회수 보류)")
+    void compensate_records_pg_refund_for_charged_card() {
+        Payment payment = compensateScenario();
+        PaymentAllocation card = payment.externalAllocations().getFirst();
+
+        service.compensate(payment.id(), "u1", "idem-1", PaymentStatus.FAILED,
+                List.of(new PaymentTransactionService.Charged(card.id(), "PG_tx_1")));
+
+        verify(compensationRecorder).record(eq(payment.id()),
+                eq(CompensationFailureRecorder.FailureType.PG_REFUND_CALL), eq(Money.won(700_000)));
+    }
+
+    @Test
+    @DisplayName("compensate(FAILED): payment와 idempotency를 FAILED로 전이한다")
+    void compensate_marks_failed() {
+        Payment payment = compensateScenario();
+
+        service.compensate(payment.id(), "u1", "idem-1", PaymentStatus.FAILED, List.of());
+
+        verify(paymentRepo).save(argThat(saved -> saved.status() == PaymentStatus.FAILED));
+        verify(idempotencyRepo).save(argThat(i -> i.status() == IdempotencyStatus.FAILED));
+    }
+
+    @Test
+    @DisplayName("compensate(FAILED_REFUNDED, 청구분 없음): payment FAILED_REFUNDED + PG 회수 기록 없음")
+    void compensate_failed_refunded_without_charge() {
+        Payment payment = compensateScenario();
+
+        service.compensate(payment.id(), "u1", "idem-1", PaymentStatus.FAILED_REFUNDED, List.of());
+
+        verify(paymentRepo).save(argThat(saved -> saved.status() == PaymentStatus.FAILED_REFUNDED));
+        verify(compensationRecorder, never()).record(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("markPgCalling: 멱등성 pgCallStatus를 CALLING으로 전이 후 저장")
+    void markPgCalling_transitions() {
+        PaymentIdempotency idempotency = idempotencyFor(splitPayment());
+        when(idempotencyRepo.find("u1", "idem-1")).thenReturn(Optional.of(idempotency));
+
+        service.markPgCalling("u1", "idem-1");
+
+        assertThat(idempotency.pgCallStatus()).isEqualTo(PgCallStatus.CALLING);
+        verify(idempotencyRepo).save(idempotency);
+    }
+
+    @Test
+    @DisplayName("markPgStatus: 주어진 PG 호출 상태(UNKNOWN)로 전이 후 저장")
+    void markPgStatus_transitions() {
+        PaymentIdempotency idempotency = idempotencyFor(splitPayment());
+        when(idempotencyRepo.find("u1", "idem-1")).thenReturn(Optional.of(idempotency));
+
+        service.markPgStatus("u1", "idem-1", PgCallStatus.UNKNOWN);
+
+        assertThat(idempotency.pgCallStatus()).isEqualTo(PgCallStatus.UNKNOWN);
+        verify(idempotencyRepo).save(idempotency);
+    }
+
+    /** compensate 대상 분할 결제 + 원복용 잔액(70만)·누적(전액 100만) 스텁. */
+    private Payment compensateScenario() {
+        Payment payment = splitPayment();
+        when(paymentRepo.findById(payment.id())).thenReturn(Optional.of(payment));
+        when(idempotencyRepo.find("u1", "idem-1")).thenReturn(Optional.of(idempotencyFor(payment)));
+        when(balanceRepo.findByUserIdWithPessimisticLock("u1"))
+                .thenReturn(Optional.of(new UserBalance("u1", Money.won(700_000))));
+        when(usageRepo.findByUserIdWithPessimisticLock("u1"))
+                .thenReturn(Optional.of(new UserDailyUsage("u1", Money.won(1_000_000), TODAY)));
+        return payment;
+    }
+
+    private Payment splitPayment() {
+        return Payment.create("u1", "ord1", Money.won(1_000_000),
+                List.of(PaymentAllocation.balance(Money.won(300_000)),
+                        PaymentAllocation.external(PaymentMethodType.CARD, "c1", Money.won(700_000))));
+    }
+
+    private PaymentIdempotency idempotencyFor(Payment payment) {
+        return PaymentIdempotency.start("idem-1", "u1", "ord1", payment.id(),
+                clock.instant().plus(Duration.ofHours(24)));
     }
 }
