@@ -9,9 +9,9 @@ services:
       MYSQL_DATABASE: payment
       MYSQL_USER: payment
       MYSQL_PASSWORD: payment
-    # 설계 9-4: innodb_lock_wait_timeout 3초 (락 대기 한도 → 409 PAYMENT_IN_PROGRESS)
+    # 근거 D-07: innodb_lock_wait_timeout 1초 (락 대기 한도 → 409 PAYMENT_IN_PROGRESS)
     command:
-      - --innodb-lock-wait-timeout=3
+      - --innodb-lock-wait-timeout=1
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     healthcheck:
