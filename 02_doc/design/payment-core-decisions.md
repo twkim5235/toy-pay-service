@@ -32,6 +32,7 @@
 | D-13 | 잔액 음수 방지는 **앱 레벨 불변식**(Money + UserBalance) | 도메인 |
 | D-14 | 일일 한도는 **lazy 자정 리셋** (배치는 보조) | 도메인 |
 | D-15 | 금액 = **원 단위 정수**(long) 값객체 Money | 도메인 |
+| D-16 | PG 멱등키는 결제당 base 1개 + allocation별 파생 `{base}:{allocationId}` | PG / 멱등성 |
 
 ---
 
@@ -253,6 +254,22 @@
 **대안.** ① `double`/`float` — 부동소수점 오차, 금융 부적합. ② `BigDecimal` — 정확하지만 원 단위 정수엔 과하고 연산·비교가 장황. ③ 원시 long 직접 사용 — 불변식이 흩어져 음수/오용 방지 누락 위험.
 
 **영향.** 도메인 전반(잔액·한도·allocation·충전)이 `Money`로 통일. INV-1로 spec 2장에 단일 정의, INV-2([[D-13]])·INV-3 등이 이 위에 성립. 다통화는 본 스코프 밖(단일 통화 가정).
+
+---
+
+## D-16 — PG 멱등키는 결제당 base 1개 + allocation별 파생
+
+**결정.** `payment_idempotency.pg_idempotency_key`는 **결제당 base 키 1개**(reserve에서 생성, `markPgCalling`에서 commit). 실제 PG 청구 시점에 외부 allocation마다 **`{base}:{allocationId}`로 파생**해 `PgPort.charge`에 전달한다. base 키 자체로는 PG를 호출하지 않는다.
+
+**맥락.** 분할 결제는 외부 수단(CARD/ACCOUNT)이 2개 이상일 수 있고, 각 외부 allocation은 **별도의 PG 청구**다. base 키 하나를 모든 청구에 그대로 보내면 PG가 두 번째 청구를 첫 번째의 **중복 재시도로 디듀프**해 한 건만 청구되는 정합성 붕괴가 생긴다.
+
+**근거.**
+- **파생 = `{base}:{allocationId}`** — `allocation.id`가 UUID로 외부 청구마다 유일하고 `payment_allocation`에 영속된다. 따라서 파생 키는 **청구마다 유일**(디듀프 충돌 없음), **재시도에 안정**(같은 allocation 재호출 시 동일 키), **보정 배치가 재구성 가능**([[D-08]]: base는 멱등성 행, allocation id는 allocation 행에서 읽어 결합).
+- **결제당 base 유지** — 스키마(`pg_idempotency_key` 단일 컬럼)를 그대로 쓰고, allocation별 키 컬럼을 추가하지 않는다(파생은 결정적이라 저장 불필요).
+
+**대안.** ① base 키 하나를 모든 allocation 청구에 공유 — 외부 다중 수단에서 PG 디듀프로 누락 청구(기각). ② allocation별 키를 `payment_allocation`에 별도 저장 — 결정적 파생이면 중복 데이터. ③ `allocationId`를 그대로 PG 키로 사용 — 내부 ID 노출·키 로테이션 불가, base 결합이 더 안전.
+
+**영향.** 파생 로직은 호출부(오케스트레이터 `ProcessPaymentService` + `PgPort.charge`)가 생기는 **다음 태스크에서 TDD로 구현**한다(현 스코프엔 호출자 없음 → 코드 보류). 도메인 `PaymentIdempotency.pgIdempotencyKey`(base)와 `Reservation.externalAllocations`(allocation id)가 파생에 필요한 입력을 이미 보유. plan.md의 "동일 `r.pgIdempotencyKey()`를 루프 전체에 전달"은 본 결정으로 대체.
 
 ---
 
