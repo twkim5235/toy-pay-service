@@ -154,6 +154,32 @@ class PaymentTransactionServiceTest {
     }
 
     @Test
+    @DisplayName("confirm: 외부 allocation이 charged 목록에 없으면 INCONSISTENT_STATE (PG 청구 없이 정산 방지)")
+    void confirm_외부_미청구_거부() {
+        Payment payment = splitPayment();
+        when(paymentRepo.findById(payment.id())).thenReturn(Optional.of(payment));
+        when(idempotencyRepo.find("u1", "idem-1")).thenReturn(Optional.of(idempotencyFor(payment)));
+
+        assertThatThrownBy(() -> service.confirm(payment.id(), "u1", "idem-1", List.of()))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.INCONSISTENT_STATE));
+    }
+
+    @Test
+    @DisplayName("confirm: 외부 allocation의 pg_transaction_id가 null이면 INCONSISTENT_STATE")
+    void confirm_pgTxId_null_거부() {
+        Payment payment = splitPayment();
+        PaymentAllocation card = payment.externalAllocations().getFirst();
+        when(paymentRepo.findById(payment.id())).thenReturn(Optional.of(payment));
+        when(idempotencyRepo.find("u1", "idem-1")).thenReturn(Optional.of(idempotencyFor(payment)));
+
+        assertThatThrownBy(() -> service.confirm(payment.id(), "u1", "idem-1",
+                List.of(new PaymentTransactionService.Charged(card.id(), null))))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.INCONSISTENT_STATE));
+    }
+
+    @Test
     @DisplayName("compensate: 잔액(BALANCE 분배분)과 일일 누적(전액)을 원복한다")
     void compensate_rolls_back_balance_and_usage() {
         Payment payment = compensateScenario();
@@ -203,14 +229,15 @@ class PaymentTransactionServiceTest {
     }
 
     @Test
-    @DisplayName("markPgCalling: 멱등성 pgCallStatus를 CALLING으로 전이 후 저장")
+    @DisplayName("markPgCalling: pgCallStatus를 CALLING으로 전이하고 pg_idempotency_key를 보존 후 저장")
     void markPgCalling_transitions() {
         PaymentIdempotency idempotency = idempotencyFor(splitPayment());
         when(idempotencyRepo.find("u1", "idem-1")).thenReturn(Optional.of(idempotency));
 
-        service.markPgCalling("u1", "idem-1");
+        service.markPgCalling("u1", "idem-1", "pg-1");
 
         assertThat(idempotency.pgCallStatus()).isEqualTo(PgCallStatus.CALLING);
+        assertThat(idempotency.pgIdempotencyKey()).isEqualTo("pg-1");
         verify(idempotencyRepo).save(idempotency);
     }
 
@@ -224,6 +251,26 @@ class PaymentTransactionServiceTest {
 
         assertThat(idempotency.pgCallStatus()).isEqualTo(PgCallStatus.UNKNOWN);
         verify(idempotencyRepo).save(idempotency);
+    }
+
+    @Test
+    @DisplayName("confirm: payment 행이 없으면 INCONSISTENT_STATE (NoSuchElement 누출 방지)")
+    void confirm_payment_없음() {
+        when(paymentRepo.findById("missing")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.confirm("missing", "u1", "idem-1", List.of()))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.INCONSISTENT_STATE));
+    }
+
+    @Test
+    @DisplayName("markPgStatus: 멱등성 행이 없으면 INCONSISTENT_STATE")
+    void markPgStatus_멱등성_없음() {
+        when(idempotencyRepo.find("u1", "missing")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.markPgStatus("u1", "missing", PgCallStatus.UNKNOWN))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.INCONSISTENT_STATE));
     }
 
     /** compensate 대상 분할 결제 + 원복용 잔액(70만)·누적(전액 100만) 스텁. */

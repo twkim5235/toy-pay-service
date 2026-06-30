@@ -25,10 +25,10 @@ import com.payment.payment.domain.PgCallStatus;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -102,29 +102,36 @@ public class PaymentTransactionService {
     }
 
     @Transactional
-    public void markPgCalling(String userId, String idempotencyKey) {
-        PaymentIdempotency idempotency = idempotencyRepo.find(userId, idempotencyKey).orElseThrow();
-        idempotency.markCalling();
+    public void markPgCalling(String userId, String idempotencyKey, String pgIdempotencyKey) {
+        PaymentIdempotency idempotency = requireIdempotency(userId, idempotencyKey);
+        idempotency.markCalling(pgIdempotencyKey);
         idempotencyRepo.save(idempotency);
     }
 
     @Transactional
     public void markPgStatus(String userId, String idempotencyKey, PgCallStatus status) {
-        PaymentIdempotency idempotency = idempotencyRepo.find(userId, idempotencyKey).orElseThrow();
+        PaymentIdempotency idempotency = requireIdempotency(userId, idempotencyKey);
         idempotency.markPgStatus(status);
         idempotencyRepo.save(idempotency);
     }
 
     @Transactional
     public PaymentResult confirm(String paymentId, String userId, String idempotencyKey, List<Charged> charged) {
-        Payment payment = paymentRepo.findById(paymentId).orElseThrow();
-        Map<String, String> pgTxByAllocation = charged.stream()
-                .collect(Collectors.toMap(Charged::allocationId, Charged::pgTransactionId));
+        Payment payment = requirePayment(paymentId);
+        Map<String, String> pgTxByAllocation = new HashMap<>(); // null pgTxId 허용 → 아래 가드에서 검출
+        charged.forEach(c -> pgTxByAllocation.put(c.allocationId(), c.pgTransactionId()));
+        // confirm은 전액 청구 성공일 때만 호출된다 — 외부 allocation에 PG 거래 ID가 없으면 청구 없는 정산이므로 거부.
+        payment.externalAllocations().forEach(a -> {
+            if (pgTxByAllocation.get(a.id()) == null) {
+                throw new BusinessException(ErrorCode.INCONSISTENT_STATE,
+                        "외부 allocation의 PG 청구 결과가 없습니다: " + a.id());
+            }
+        });
         payment.allocations().forEach(a -> a.settle(pgTxByAllocation.get(a.id()))); // BALANCE는 pgTxId=null
         payment.markPaid(clock.instant());
         paymentRepo.save(payment);
 
-        PaymentIdempotency idempotency = idempotencyRepo.find(userId, idempotencyKey).orElseThrow();
+        PaymentIdempotency idempotency = requireIdempotency(userId, idempotencyKey);
         idempotency.complete();
         idempotencyRepo.save(idempotency);
         return PaymentResultMapper.toResult(payment);
@@ -133,12 +140,14 @@ public class PaymentTransactionService {
     @Transactional
     public void compensate(String paymentId, String userId, String idempotencyKey,
             PaymentStatus finalStatus, List<Charged> chargedToRefund) {
-        Payment payment = paymentRepo.findById(paymentId).orElseThrow();
+        Payment payment = requirePayment(paymentId);
         LocalDate today = LocalDate.now(clock);
 
         // 잔액 → 한도 고정 순서 락으로 내부 차감을 원복 (reserve와 동일 순서, 데드락 회피 설계 9-2).
-        UserBalance balance = balanceRepo.findByUserIdWithPessimisticLock(userId).orElseThrow();
-        UserDailyUsage usage = usageRepo.findByUserIdWithPessimisticLock(userId).orElseThrow();
+        UserBalance balance = balanceRepo.findByUserIdWithPessimisticLock(userId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.INCONSISTENT_STATE, "잔액 행이 없습니다: " + userId));
+        UserDailyUsage usage = usageRepo.findByUserIdWithPessimisticLock(userId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.INCONSISTENT_STATE, "일일 사용량 행이 없습니다: " + userId));
         Money balanceAmount = payment.balanceAmount();
         if (balanceAmount.isPositive()) {
             balance.rollback(balanceAmount);
@@ -163,9 +172,22 @@ public class PaymentTransactionService {
         }
         paymentRepo.save(payment);
 
-        PaymentIdempotency idempotency = idempotencyRepo.find(userId, idempotencyKey).orElseThrow();
+        PaymentIdempotency idempotency = requireIdempotency(userId, idempotencyKey);
         idempotency.fail();
         idempotencyRepo.save(idempotency);
+    }
+
+    // 흐름 중간 행의 부재 = reserve가 남긴 행이 사라진 것 → 클라이언트 오류가 아닌 정합성 붕괴(500).
+    private PaymentIdempotency requireIdempotency(String userId, String idempotencyKey) {
+        return idempotencyRepo.find(userId, idempotencyKey)
+                .orElseThrow(() -> new BusinessException(ErrorCode.INCONSISTENT_STATE,
+                        "멱등성 행이 없습니다: " + idempotencyKey));
+    }
+
+    private Payment requirePayment(String paymentId) {
+        return paymentRepo.findById(paymentId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.INCONSISTENT_STATE,
+                        "결제 행이 없습니다: " + paymentId));
     }
 
     private Payment toPayment(ProcessPaymentCommand command) {

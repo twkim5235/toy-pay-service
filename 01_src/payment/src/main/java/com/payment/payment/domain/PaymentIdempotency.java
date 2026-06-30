@@ -18,29 +18,33 @@ public class PaymentIdempotency {
     private final String paymentId;
     private IdempotencyStatus status;
     private PgCallStatus pgCallStatus;
+    private String pgIdempotencyKey; // PG 호출 직전(markCalling) 보존, 그 전엔 null
     private final Instant expiredAt;
 
     PaymentIdempotency(String idempotencyKey, String userId, String orderId, String paymentId,
-            IdempotencyStatus status, PgCallStatus pgCallStatus, Instant expiredAt) {
+            IdempotencyStatus status, PgCallStatus pgCallStatus, String pgIdempotencyKey, Instant expiredAt) {
         this.idempotencyKey = idempotencyKey;
         this.userId = userId;
         this.orderId = orderId;
         this.paymentId = paymentId;
         this.status = status;
         this.pgCallStatus = pgCallStatus;
+        this.pgIdempotencyKey = pgIdempotencyKey;
         this.expiredAt = expiredAt;
     }
 
     public static PaymentIdempotency start(String idempotencyKey, String userId, String orderId,
             String paymentId, Instant expiredAt) {
         return new PaymentIdempotency(idempotencyKey, userId, orderId, paymentId,
-                IdempotencyStatus.PENDING, PgCallStatus.NOT_CALLED, expiredAt);
+                IdempotencyStatus.PENDING, PgCallStatus.NOT_CALLED, null, expiredAt);
     }
 
     /** DB 복원용. */
     public static PaymentIdempotency restore(String idempotencyKey, String userId, String orderId,
-            String paymentId, IdempotencyStatus status, PgCallStatus pgCallStatus, Instant expiredAt) {
-        return new PaymentIdempotency(idempotencyKey, userId, orderId, paymentId, status, pgCallStatus, expiredAt);
+            String paymentId, IdempotencyStatus status, PgCallStatus pgCallStatus,
+            String pgIdempotencyKey, Instant expiredAt) {
+        return new PaymentIdempotency(idempotencyKey, userId, orderId, paymentId, status, pgCallStatus,
+                pgIdempotencyKey, expiredAt);
     }
 
     public IdempotencyDecision resolve() {
@@ -51,8 +55,9 @@ public class PaymentIdempotency {
         };
     }
 
-    public void markCalling() {
+    public void markCalling(String pgIdempotencyKey) {
         this.pgCallStatus = PgCallStatus.CALLING;
+        this.pgIdempotencyKey = pgIdempotencyKey;
     }
 
     public void markPgStatus(PgCallStatus pgCallStatus) {
@@ -90,6 +95,10 @@ public class PaymentIdempotency {
 
     public PgCallStatus pgCallStatus() {
         return pgCallStatus;
+    }
+
+    public String pgIdempotencyKey() {
+        return pgIdempotencyKey;
     }
 
     public Instant expiredAt() {
