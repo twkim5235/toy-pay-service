@@ -1,5 +1,5 @@
 -- ============================================================
---  payment 서버 스키마  (설계: payment-design-v0_2.md 7장)
+--  payment 서버 스키마  (스펙 단일 소유: 02_doc/spec/payment-core-spec.md 3장)
 --  컨벤션: FK 미설정, VARCHAR(64) UUID PK, BIGINT 금액(원 단위),
 --          감사 로그는 INSERT-only
 -- ============================================================
@@ -81,7 +81,7 @@ CREATE TABLE user_balance (
 CREATE TABLE balance_history (
     id              BIGINT       NOT NULL AUTO_INCREMENT,
     user_id         VARCHAR(64)  NOT NULL,
-    action          VARCHAR(16)  NOT NULL, -- CHARGE/PAYMENT/REFUND/ROLLBACK
+    action          VARCHAR(16)  NOT NULL, -- CHARGE/PAYMENT/ROLLBACK (REFUND은 [2차] 환불 도메인)
     amount_change   BIGINT       NOT NULL, -- 부호 포함 (+충전 / -결제)
     balance_after   BIGINT       NOT NULL,
     payment_id      VARCHAR(64)  NULL,
@@ -164,6 +164,7 @@ CREATE TABLE compensating_transaction_failures (
     failed_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     INDEX idx_payment_id (payment_id),
+    INDEX idx_charge_id (charge_id),
     INDEX idx_failed_at (failed_at)
 );
 
