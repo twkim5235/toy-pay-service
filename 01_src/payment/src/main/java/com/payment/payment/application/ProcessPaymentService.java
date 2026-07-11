@@ -20,11 +20,13 @@ import com.payment.payment.domain.PaymentIdempotency;
 import com.payment.payment.domain.PaymentStatus;
 import com.payment.payment.domain.PgCallStatus;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.stereotype.Service;
 
 /**
@@ -38,6 +40,9 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class ProcessPaymentService implements ProcessPaymentUseCase {
+
+    private static final int CONFIRM_MAX_ATTEMPTS = 3;
+    private static final Duration CONFIRM_RETRY_BACKOFF = Duration.ofMillis(100);
 
     private final PaymentTransactionService tx;
     private final PgPort pgPort;
@@ -99,10 +104,14 @@ public class ProcessPaymentService implements ProcessPaymentUseCase {
         tx.markPgStatus(command.userId(), command.idempotencyKey(), PgCallStatus.SUCCESS);
         PaymentResult result;
         try {
-            result = tx.confirm(
-                    reservation.paymentId(), command.userId(), command.idempotencyKey(), charged);
+            result = confirmWithRetry(reservation.paymentId(), command, charged);
+        } catch (TransientDataAccessException e) {
+            // 재시도 소진: 청구 성공이 확실하므로 원상복구하지 않는다. PENDING+SUCCESS 발자국을
+            // 남겨두면 보정 배치가 confirm을 재구동해 PAID로 완결한다 (결정 D-17).
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR);
         } catch (RuntimeException e) {
-            // TX2 실패(시나리오 22): PG 청구는 성공했으므로 내부 원복 + 청구분 전체를 회수 대상으로 기록.
+            // 결정론적 실패(시나리오 22): 재시도·배치 재구동 모두 같은 결과 — 즉시 내부 원복하고
+            // 청구분 전체를 회수 대상으로 기록한다.
             tx.compensate(reservation.paymentId(), command.userId(), command.idempotencyKey(),
                     PaymentStatus.FAILED_REFUNDED, charged);
             throw new BusinessException(ErrorCode.INCONSISTENT_STATE);
@@ -112,5 +121,29 @@ public class ProcessPaymentService implements ProcessPaymentUseCase {
                 result.paymentId(), result.userId(), result.orderId(),
                 result.totalAmount().value(), clock.instant()));
         return result;
+    }
+
+    // 일시적 예외(순단·데드락 희생)만 재시도 — 실패한 트랜잭션은 롤백돼 있어 재실행이 안전하다 (결정 D-17).
+    private PaymentResult confirmWithRetry(String paymentId, ProcessPaymentCommand command,
+            List<Charged> charged) {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return tx.confirm(paymentId, command.userId(), command.idempotencyKey(), charged);
+            } catch (TransientDataAccessException e) {
+                if (attempt >= CONFIRM_MAX_ATTEMPTS) {
+                    throw e;
+                }
+                backoff();
+            }
+        }
+    }
+
+    private void backoff() {
+        try {
+            Thread.sleep(CONFIRM_RETRY_BACKOFF.toMillis());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR);
+        }
     }
 }

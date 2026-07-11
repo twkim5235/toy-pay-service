@@ -44,6 +44,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.dao.TransientDataAccessResourceException;
 
 class ProcessPaymentServiceTest {
 
@@ -201,19 +202,58 @@ class ProcessPaymentServiceTest {
     }
 
     @Test
-    @DisplayName("confirm 실패(시나리오 22): 보상(FAILED_REFUNDED, 청구분 회수) + INCONSISTENT_STATE")
+    @DisplayName("confirm 결정론적 실패(시나리오 22): 재시도 없이 즉시 보상(FAILED_REFUNDED, 청구분 회수) + INCONSISTENT_STATE")
     void confirmFailureCompensatesWithRefund() {
         PaymentAllocation ext = PaymentAllocation.external(PaymentMethodType.CARD, "c1", Money.won(700_000));
         when(tx.reserve(any())).thenReturn(new Reservation("PAY1", "idem-1", "pg-1", List.of(ext)));
         when(pgPort.charge(any())).thenReturn(PgChargeResult.approved("PG_tx_1"));
-        when(tx.confirm(any(), any(), any(), anyList())).thenThrow(new RuntimeException("DB down"));
+        when(tx.confirm(any(), any(), any(), anyList())).thenThrow(new RuntimeException("도메인 가드 위반"));
 
         assertThatThrownBy(() -> service.process(splitCommand()))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.INCONSISTENT_STATE));
 
+        verify(tx, times(1)).confirm(any(), any(), any(), anyList());
         verify(tx).compensate("PAY1", "u1", "idem-1", PaymentStatus.FAILED_REFUNDED,
                 List.of(new Charged(ext.id(), "PG_tx_1")));
+        verify(publisher, never()).paymentCreated(any());
+    }
+
+    @Test
+    @DisplayName("confirm 일시적 실패(D-17): 순단 2회 후 성공하면 PAID — 보상하지 않고 이벤트 발행")
+    void confirmTransientFailureRetriesToPaid() {
+        PaymentAllocation ext = PaymentAllocation.external(PaymentMethodType.CARD, "c1", Money.won(700_000));
+        when(tx.reserve(any())).thenReturn(new Reservation("PAY1", "idem-1", "pg-1", List.of(ext)));
+        when(pgPort.charge(any())).thenReturn(PgChargeResult.approved("PG_tx_1"));
+        when(tx.confirm(any(), any(), any(), anyList()))
+                .thenThrow(new TransientDataAccessResourceException("커넥션 순단"),
+                        new TransientDataAccessResourceException("커넥션 순단"))
+                .thenReturn(paidResult());
+
+        PaymentResult result = service.process(splitCommand());
+
+        assertThat(result.status()).isEqualTo(PaymentStatus.PAID);
+        verify(tx, times(3)).confirm(any(), any(), any(), anyList());
+        verify(tx, never()).compensate(any(), any(), any(), any(), anyList());
+        verify(publisher).paymentCreated(any());
+    }
+
+    @Test
+    @DisplayName("confirm 일시적 실패(D-17): 3회 소진 시 보상하지 않고 발자국을 남긴다(보정 배치가 완결) + INTERNAL_ERROR")
+    void confirmRetryExhaustedLeavesFootprintForBatch() {
+        PaymentAllocation ext = PaymentAllocation.external(PaymentMethodType.CARD, "c1", Money.won(700_000));
+        when(tx.reserve(any())).thenReturn(new Reservation("PAY1", "idem-1", "pg-1", List.of(ext)));
+        when(pgPort.charge(any())).thenReturn(PgChargeResult.approved("PG_tx_1"));
+        when(tx.confirm(any(), any(), any(), anyList()))
+                .thenThrow(new TransientDataAccessResourceException("DB 접속 불가"));
+
+        assertThatThrownBy(() -> service.process(splitCommand()))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.INTERNAL_ERROR));
+
+        // 청구 성공이 확실하므로 원상복구 금지 — PENDING+SUCCESS 발자국이 배치의 재구동 근거다.
+        verify(tx, times(3)).confirm(any(), any(), any(), anyList());
+        verify(tx, never()).compensate(any(), any(), any(), any(), anyList());
         verify(publisher, never()).paymentCreated(any());
     }
 
