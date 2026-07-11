@@ -39,7 +39,7 @@ import org.springframework.stereotype.Service;
  */
 @Service
 @RequiredArgsConstructor
-public class ProcessPaymentService implements ProcessPaymentUseCase {
+public class ProcessPaymentOrchestrator implements ProcessPaymentUseCase {
 
     private static final int CONFIRM_MAX_ATTEMPTS = 3;
     private static final Duration CONFIRM_RETRY_BACKOFF = Duration.ofMillis(100);

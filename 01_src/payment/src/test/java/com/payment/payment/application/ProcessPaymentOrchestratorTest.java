@@ -46,7 +46,7 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.dao.TransientDataAccessResourceException;
 
-class ProcessPaymentServiceTest {
+class ProcessPaymentOrchestratorTest {
 
     private final PaymentTransactionService tx = mock(PaymentTransactionService.class);
     private final PgPort pgPort = mock(PgPort.class);
@@ -55,7 +55,7 @@ class ProcessPaymentServiceTest {
     private final PaymentEventPublisher publisher = mock(PaymentEventPublisher.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-07-08T00:00:00Z"), ZoneOffset.UTC);
 
-    private final ProcessPaymentService service = new ProcessPaymentService(
+    private final ProcessPaymentOrchestrator service = new ProcessPaymentOrchestrator(
             tx, pgPort, idempotencyRepo, paymentRepo, publisher, clock);
 
     private ProcessPaymentCommand splitCommand() {

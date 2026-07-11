@@ -154,7 +154,7 @@
 
 **대안.** ① PG 호출을 트랜잭션 안에 — 락 장시간 점유로 동시성 붕괴. ② 보정 없이 동기 재시도만 — 타임아웃 후 실제 성공한 청구를 영구히 모름(이중 청구/미반영). ③ 메시지 큐 기반 비동기 확정 — 1차엔 배치로 충분, 인프라 추가 보류.
 
-**영향.** 오케스트레이터 `ProcessPaymentService`는 **`@Transactional` 금지**(불변식). 트랜잭션 경계는 협력자 `PaymentTransactionService`(reserve/markPgCalling/markPgStatus/confirm/compensate)가 잘게 소유. 타임아웃은 원복하지 않고 배치 위임([[D-09]]와 함께 이중 청구 위험 관리).
+**영향.** 오케스트레이터 `ProcessPaymentOrchestrator`는 **`@Transactional` 금지**(불변식). 트랜잭션 경계는 협력자 `PaymentTransactionService`(reserve/markPgCalling/markPgStatus/confirm/compensate)가 잘게 소유. 타임아웃은 원복하지 않고 배치 위임([[D-09]]와 함께 이중 청구 위험 관리).
 
 ---
 
@@ -270,7 +270,7 @@
 
 **대안.** ① base 키 하나를 모든 allocation 청구에 공유 — 외부 다중 수단에서 PG 디듀프로 누락 청구(기각). ② allocation별 키를 `payment_allocation`에 별도 저장 — 결정적 파생이면 중복 데이터. ③ `allocationId`를 그대로 PG 키로 사용 — 내부 ID 노출·키 로테이션 불가, base 결합이 더 안전.
 
-**영향.** 파생 로직은 호출부(오케스트레이터 `ProcessPaymentService` + `PgPort.charge`)가 생기는 **다음 태스크에서 TDD로 구현**한다(현 스코프엔 호출자 없음 → 코드 보류). 도메인 `PaymentIdempotency.pgIdempotencyKey`(base)와 `Reservation.externalAllocations`(allocation id)가 파생에 필요한 입력을 이미 보유. plan.md의 "동일 `r.pgIdempotencyKey()`를 루프 전체에 전달"은 본 결정으로 대체.
+**영향.** 파생 로직은 호출부(오케스트레이터 `ProcessPaymentOrchestrator` + `PgPort.charge`)가 생기는 **다음 태스크에서 TDD로 구현**한다(현 스코프엔 호출자 없음 → 코드 보류). 도메인 `PaymentIdempotency.pgIdempotencyKey`(base)와 `Reservation.externalAllocations`(allocation id)가 파생에 필요한 입력을 이미 보유. plan.md의 "동일 `r.pgIdempotencyKey()`를 루프 전체에 전달"은 본 결정으로 대체.
 
 ---
 
