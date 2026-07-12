@@ -29,10 +29,19 @@ public class GlobalExceptionHandler {
                 .body(ErrorResponse.of(code, e.getMessage()));
     }
 
-    @ExceptionHandler({MethodArgumentNotValidException.class, MissingRequestHeaderException.class})
-    public ResponseEntity<ErrorResponse> handleValidation(Exception e) {
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException e) {
         return ResponseEntity.status(ErrorCode.INVALID_REQUEST.httpStatus())
                 .body(ErrorResponse.of(ErrorCode.INVALID_REQUEST, e.getMessage()));
+    }
+
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public ResponseEntity<ErrorResponse> handleMissingHeader(MissingRequestHeaderException e) {
+        // Idempotency-Key 누락은 전용 코드로 — 클라이언트가 "키를 만들어 보내라"를 구분해 인지해야 한다 (설계 6-1).
+        ErrorCode code = "Idempotency-Key".equals(e.getHeaderName())
+                ? ErrorCode.MISSING_IDEMPOTENCY_KEY : ErrorCode.INVALID_REQUEST;
+        return ResponseEntity.status(code.httpStatus())
+                .body(ErrorResponse.of(code, e.getMessage()));
     }
 
     @ExceptionHandler(Exception.class)

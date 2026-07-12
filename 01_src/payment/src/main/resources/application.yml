@@ -1,6 +1,9 @@
 spring:
   application:
     name: payment-service
+  jackson:
+    # API JSON 필드는 snake_case (설계 6-1 계약)
+    property-naming-strategy: SNAKE_CASE
   datasource:
     url: jdbc:mysql://localhost:3306/payment?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
     username: payment
