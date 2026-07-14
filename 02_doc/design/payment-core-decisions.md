@@ -33,6 +33,7 @@
 | D-14 | 일일 한도는 **lazy 자정 리셋** (배치는 보조) | 도메인 |
 | D-15 | 금액 = **원 단위 정수**(long) 값객체 Money | 도메인 |
 | D-16 | PG 멱등키는 결제당 base 1개 + allocation별 파생 `{base}:{allocationId}` | PG / 멱등성 |
+| D-17 | confirm(TX2) 일시적 실패는 재시도, 소진 시 보상 대신 보정 배치로 완결 | PG / 보상 |
 
 ---
 
@@ -153,7 +154,7 @@
 
 **대안.** ① PG 호출을 트랜잭션 안에 — 락 장시간 점유로 동시성 붕괴. ② 보정 없이 동기 재시도만 — 타임아웃 후 실제 성공한 청구를 영구히 모름(이중 청구/미반영). ③ 메시지 큐 기반 비동기 확정 — 1차엔 배치로 충분, 인프라 추가 보류.
 
-**영향.** 오케스트레이터 `ProcessPaymentService`는 **`@Transactional` 금지**(불변식). 트랜잭션 경계는 협력자 `PaymentTransactionService`(reserve/markPgCalling/markPgStatus/confirm/compensate)가 잘게 소유. 타임아웃은 원복하지 않고 배치 위임([[D-09]]와 함께 이중 청구 위험 관리).
+**영향.** 오케스트레이터 `ProcessPaymentOrchestrator`는 **`@Transactional` 금지**(불변식). 트랜잭션 경계는 협력자 `PaymentTransactionService`(reserve/markPgCalling/markPgStatus/confirm/compensate)가 잘게 소유. 타임아웃은 원복하지 않고 배치 위임([[D-09]]와 함께 이중 청구 위험 관리).
 
 ---
 
@@ -269,7 +270,25 @@
 
 **대안.** ① base 키 하나를 모든 allocation 청구에 공유 — 외부 다중 수단에서 PG 디듀프로 누락 청구(기각). ② allocation별 키를 `payment_allocation`에 별도 저장 — 결정적 파생이면 중복 데이터. ③ `allocationId`를 그대로 PG 키로 사용 — 내부 ID 노출·키 로테이션 불가, base 결합이 더 안전.
 
-**영향.** 파생 로직은 호출부(오케스트레이터 `ProcessPaymentService` + `PgPort.charge`)가 생기는 **다음 태스크에서 TDD로 구현**한다(현 스코프엔 호출자 없음 → 코드 보류). 도메인 `PaymentIdempotency.pgIdempotencyKey`(base)와 `Reservation.externalAllocations`(allocation id)가 파생에 필요한 입력을 이미 보유. plan.md의 "동일 `r.pgIdempotencyKey()`를 루프 전체에 전달"은 본 결정으로 대체.
+**영향.** 파생 로직은 호출부(오케스트레이터 `ProcessPaymentOrchestrator` + `PgPort.charge`)가 생기는 **다음 태스크에서 TDD로 구현**한다(현 스코프엔 호출자 없음 → 코드 보류). 도메인 `PaymentIdempotency.pgIdempotencyKey`(base)와 `Reservation.externalAllocations`(allocation id)가 파생에 필요한 입력을 이미 보유. plan.md의 "동일 `r.pgIdempotencyKey()`를 루프 전체에 전달"은 본 결정으로 대체.
+
+---
+
+## D-17 — confirm(TX2) 일시적 실패는 재시도, 소진 시 보상 대신 보정 배치로 완결
+
+**결정.** 오케스트레이터는 `confirm`이 **일시적 데이터 접근 예외**(`TransientDataAccessException`: 커넥션 순단, 데드락 희생, 쿼리 타임아웃)로 실패하면 **짧은 백오프로 총 3회까지 동기 재시도**한다. 재시도가 **소진되면 보상하지 않는다** — DB 발자국(`payment_idempotency.status=PENDING` + `pg_call_status=SUCCESS`, `payments.status=PENDING`)을 그대로 두고 `INTERNAL_ERROR`(500)로 응답하며, **보정 배치가 이 조합의 행을 쓸어 confirm을 재구동해 PAID로 완결**하고 payment-created 이벤트도 그때 발행한다. **결정론적 실패**(도메인 가드 위반 등 비일시적 예외)만 재시도 없이 즉시 보상한다(FAILED_REFUNDED + 회수 기록 — 시나리오 22 원안은 이 경로로 한정).
+
+**맥락.** confirm 시점은 PG 청구가 **이미 성공한 뒤** — 남은 일은 "우리 DB에 성공을 기록"뿐이다. 여기서 보상을 택하면 일시적 순단 한 번이 "환불 빚 + 2차 도메인 회수 + 고객에게 실패 통보(카드값은 나갔다 돌아옴)"로 확대된다. 또한 기존 설계는 **정보가 더 적은** 타임아웃(청구 여부 미상)은 배치에 맡기면서, **정보가 더 많은** confirm 실패(청구 성공 확실)는 되돌리는 비대칭이 있었다. 청구 성공이 확실하므로 PAID 수렴이 유일하게 옳은 종착이고, 배치가 그 수렴을 보장한다.
+
+**근거.**
+- **재시도는 안전** — 실패한 confirm 트랜잭션은 롤백돼 있어 같은 인자로 재실행해도 이중 정산이 없다. 동기 3회·백오프 100ms(최악 +200ms)는 살아나는 경우 고객이 즉시 확정 응답을 받게 한다.
+- **DB 발자국이 곧 내구성 있는 큐** — `pg_call_status=SUCCESS + status=PENDING` 조합 자체가 "청구됐는데 확정 못 함"을 유일하게 식별한다. 별도 재시도 이벤트를 발행하면 그 발행이 같은 장애에 물리고(재귀 복구 문제) 새 인프라가 필요하다.
+- **고객 UX가 타임아웃과 일관** — 500 수신 → 같은 키 재시도는 PENDING이라 409(이중결제 방지) → 배치 확정 후 REPLAY로 결과 수신. 새로운 상태 표면이 생기지 않는다.
+- **일시적 예외로 한정** — 결정론적 실패는 배치가 재구동해도 영원히 같은 가드에 걸린다. Spring 예외 위계(`TransientDataAccessException`)가 분류를 제공한다.
+
+**대안.** ① 재시도 소진 시 즉시 보상 — 일시 장애마다 환불 빚 발생, 타임아웃 처리와 비대칭(기각). ② Kafka 이벤트 발행으로 비동기 재시도 트리거 — 발행 자체가 같은 장애에 노출, DB 발자국으로 충분(기각). ③ 동기 무한 재시도 — 응답 지연 상한 없음(기각). ④ Spring Retry 의존성 — 루프 하나에 과함(기각).
+
+**영향.** 오케스트레이터의 confirm 예외 처리 2분기: transient 소진 → 발자국 유지 + `INTERNAL_ERROR` / 비일시적 → 즉시 compensate(FAILED_REFUNDED) + `INCONSISTENT_STATE`. **보정 배치([[D-08]]) 요구사항 추가**: `SUCCESS+PENDING` 행의 confirm 재구동(+이벤트 발행)과, 반복 실패 시 포기 상한(그때 최후 보상+회수 기록) — 상한 정책은 배치 태스크에서 확정. 배치 구현 전까지 해당 행은 PENDING에 머문다(타임아웃·서버 사망과 동일한 기존 공백).
 
 ---
 

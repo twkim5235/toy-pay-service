@@ -24,7 +24,7 @@
 
 ### 1. payment 컨텍스트 (결제 본류) — 다음 작업 `feat/payment-core`
 - **domain**: `Payment`, `PaymentAllocation`(allocation 합 == total_amount 검증, BALANCE 최대 1개), `PaymentIdempotency`(상태 분기)
-- **application**: `ProcessPaymentService` — 트랜잭션1(멱등성/잔액/한도 차감) → PG 호출(트랜잭션 밖) → 트랜잭션2(PAID 확정), 보상 트랜잭션(시나리오 22)
+- **application**: `ProcessPaymentOrchestrator` — 트랜잭션1(멱등성/잔액/한도 차감) → PG 호출(트랜잭션 밖) → 트랜잭션2(PAID 확정), 보상 트랜잭션(시나리오 22)
 - **port**: `ProcessPaymentUseCase`(in), `PgPort`/`PaymentRepository`/`PaymentEventPublisher`(out)
 - **adapter**: `PaymentController`(POST /payments), persistence, `MockPgAdapter`, `KafkaEventPublisher`
 - **멱등성 분기**: COMPLETED→200(기존응답) / PENDING→409 / FAILED→신규허용 / 없음→신규

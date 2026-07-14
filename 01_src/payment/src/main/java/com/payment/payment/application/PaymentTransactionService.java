@@ -34,7 +34,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 결제 트랜잭션 경계 (설계 6-1). 오케스트레이터({@link ProcessPaymentService})가 PG 호출을 사이에 끼고
+ * 결제 트랜잭션 경계 (설계 6-1). 오케스트레이터({@link ProcessPaymentOrchestrator})가 PG 호출을 사이에 끼고
  * 본 협력자의 트랜잭션 메서드들을 차례로 호출한다 — PG 호출이 트랜잭션 밖이라 단일 {@code @Transactional}로
  * 묶지 않는다.
  *

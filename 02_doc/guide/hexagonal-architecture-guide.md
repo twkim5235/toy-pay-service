@@ -191,6 +191,6 @@ class PaymentIdempotencyPersistenceAdapter implements PaymentIdempotencyReposito
 
 - 잔액·한도는 별도 서버가 아니라 payment **내부 모듈** → 단일 DB 트랜잭션 원자성.
 - PG는 `PgPort` 인터페이스 + Mock 어댑터, **트랜잭션 밖**에서 호출.
-- 결제 흐름 전체 조율(오케스트레이터)은 `ProcessPaymentService`(예정)가 맡고 `@Transactional`을 걸지 않는다(PG 호출이 트랜잭션 밖이어야 하므로).
+- 결제 흐름 전체 조율(오케스트레이터)은 `ProcessPaymentOrchestrator`(예정)가 맡고 `@Transactional`을 걸지 않는다(PG 호출이 트랜잭션 밖이어야 하므로).
 
 자세한 근거는 `02_doc/design/payment-design-v0_2.md`, `02_doc/design/payment-core-decisions.md` 참고.

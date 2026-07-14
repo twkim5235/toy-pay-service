@@ -310,7 +310,7 @@ PENDING ──confirm──▶ PAID
 
 # 플로우 (Behavior)
 
-> 플로우는 트랜잭션 경계 협력자 `PaymentTransactionService`(`reserve`/`markPgCalling`/`markPgStatus`/`confirm`/`compensate`)를 오케스트레이터 `ProcessPaymentService`가 PG 호출을 사이에 끼고 호출하는 구조다. **오케스트레이터는 `@Transactional`을 걸지 않는다** — PG 호출이 트랜잭션 밖이어야 하므로 (근거: D-08, 5장).
+> 플로우는 트랜잭션 경계 협력자 `PaymentTransactionService`(`reserve`/`markPgCalling`/`markPgStatus`/`confirm`/`compensate`)를 오케스트레이터 `ProcessPaymentOrchestrator`가 PG 호출을 사이에 끼고 호출하는 구조다. **오케스트레이터는 `@Transactional`을 걸지 않는다** — PG 호출이 트랜잭션 밖이어야 하므로 (근거: D-08, 5장).
 
 ## 9. 결제 처리 — Happy Path (R-11~14)
 
