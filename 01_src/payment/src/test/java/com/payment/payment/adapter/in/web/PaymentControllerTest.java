@@ -105,6 +105,17 @@ class PaymentControllerTest {
     }
 
     @Test
+    @DisplayName("Idempotency-Key가 빈 문자열이어도 400 MISSING_IDEMPOTENCY_KEY, 유스케이스 미호출")
+    void blankIdempotencyKeyHeader() throws Exception {
+        mvc.perform(post("/payments").header("Idempotency-Key", "  ")
+                        .contentType(MediaType.APPLICATION_JSON).content(SPLIT_BODY))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("MISSING_IDEMPOTENCY_KEY"));
+
+        verify(useCase, never()).process(any());
+    }
+
+    @Test
     @DisplayName("형식 위반(user_id 공백): 400 INVALID_REQUEST, 유스케이스 미호출")
     void blankUserIdRejected() throws Exception {
         String body = """

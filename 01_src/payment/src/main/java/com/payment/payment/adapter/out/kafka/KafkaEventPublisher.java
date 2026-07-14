@@ -10,11 +10,12 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 class KafkaEventPublisher implements PaymentEventPublisher {
 
-  private static final String PAYMENT_CREATED = "payment-created";
-  private final KafkaTemplate<String, Object> kafkaTemplate;
+    private static final String PAYMENT_CREATED = "payment-created";
 
-  @Override
-  public void paymentCreated(PaymentCreatedEvent event) {
-    kafkaTemplate.send(PAYMENT_CREATED, event.userId(), event);
-  }
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+
+    @Override
+    public void paymentCreated(PaymentCreatedEvent event) {
+        kafkaTemplate.send(PAYMENT_CREATED, event.userId(), event);
+    }
 }

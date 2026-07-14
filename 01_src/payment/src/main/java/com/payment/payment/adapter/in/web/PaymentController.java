@@ -1,5 +1,7 @@
 package com.payment.payment.adapter.in.web;
 
+import com.payment.common.error.BusinessException;
+import com.payment.common.error.ErrorCode;
 import com.payment.payment.application.port.in.ProcessPaymentUseCase;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -21,6 +23,10 @@ class PaymentController {
     @PostMapping("/payments")
     PaymentResponse pay(@RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody PaymentRequest request) {
+        if (idempotencyKey.isBlank()) {
+            // 헤더 부재는 스프링이 400으로 끊지만, 빈 값은 통과해 빈 키로 멱등성 행이 생긴다.
+            throw new BusinessException(ErrorCode.MISSING_IDEMPOTENCY_KEY);
+        }
         return PaymentResponse.from(useCase.process(request.toCommand(idempotencyKey)));
     }
 }

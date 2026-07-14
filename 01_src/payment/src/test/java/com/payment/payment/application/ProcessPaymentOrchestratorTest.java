@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -43,6 +44,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.dao.TransientDataAccessResourceException;
 
@@ -85,7 +87,11 @@ class ProcessPaymentOrchestratorTest {
         PaymentResult result = service.process(splitCommand());
 
         assertThat(result.status()).isEqualTo(PaymentStatus.PAID);
-        verify(tx).markPgCalling("u1", "idem-1", "pg-1");
+        // CALLING 발자국은 PG 호출보다 먼저 남아야 한다 — 순서가 뒤집히면 서버 사망 시
+        // 보정 배치가 미완료 호출을 발견할 근거가 사라진다 (설계 6-3, D-08).
+        InOrder inOrder = inOrder(tx, pgPort);
+        inOrder.verify(tx).markPgCalling("u1", "idem-1", "pg-1");
+        inOrder.verify(pgPort).charge(any());
         verify(tx).markPgStatus("u1", "idem-1", PgCallStatus.SUCCESS);
         verify(tx).confirm("PAY1", "u1", "idem-1", List.of(new Charged(ext.id(), "PG_tx_1")));
 
