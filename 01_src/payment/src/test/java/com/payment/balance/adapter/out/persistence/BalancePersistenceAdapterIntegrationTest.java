@@ -25,8 +25,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-@SpringBootTest(properties =
-        "spring.autoconfigure.exclude=org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration")
+// Kafka autoconfig를 제외하지 않는다 — KafkaEventPublisher가 KafkaTemplate 빈을 요구하며,
+// 템플릿은 첫 send까지 브로커에 접속하지 않아 브로커 없이도 컨텍스트가 뜬다.
+@SpringBootTest
 @DisplayName("balance 영속 어댑터 통합테스트 (Testcontainers MySQL)")
 class BalancePersistenceAdapterIntegrationTest extends AbstractMySqlContainerTest {
 
